@@ -16,11 +16,16 @@ Run from llm-agent-collusion/ (the repo-root compute.env must hold OPENROUTER_AP
 Every run lands in results/sprint/<timestamp>_<condition>-seed<N>/ (results/sprint_paper/ with --paper).
 Runs that already finished in that folder are skipped, so you can re-run a stage after a crash and the
 pilot's seed-0 runs count toward the core stage. Then: uv run python sprint/analyze.py
+
+OpenRouter caps new accounts at 20 requests per minute per model, so by default all parallel runs
+together stay under 18 per minute (--rpm). Older accounts can raise it, or turn it off with --rpm 0.
 """
 
 import argparse
+import os
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -112,9 +117,11 @@ def already_done(log_dir: Path, condition: str, seed: int) -> bool:
     return any((d / "collusion_metrics.json").exists() for d in log_dir.glob(f"*_{condition}-seed{seed}"))
 
 
-def run_one(cmd: list[str], log_file: Path) -> int:
+def run_one(cmd: list[str], log_file: Path, env: dict, deadline: float | None = None) -> int | None:
+    if deadline is not None and time.time() > deadline:
+        return None  # past the time budget: not started, a re-run picks it up
     with open(log_file, "w", encoding="utf-8") as f:
-        return subprocess.run(cmd, cwd=PROJECT_DIR, stdout=f, stderr=subprocess.STDOUT, check=False).returncode
+        return subprocess.run(cmd, cwd=PROJECT_DIR, stdout=f, stderr=subprocess.STDOUT, check=False, env=env).returncode
 
 
 def summary_lines(log_file: Path) -> str:
@@ -134,7 +141,12 @@ def main() -> None:
     p.add_argument("--paper", action="store_true", help="paper-size market: 5 sellers, 6 buyers, 30 rounds")
     p.add_argument("--rounds", type=int, help="override the number of rounds")
     p.add_argument("--parallel", type=int, default=3, help="runs at the same time (default 3)")
+    p.add_argument("--rpm", type=float, default=18,
+                   help="max requests per minute per model, shared by all parallel runs (default 18; OpenRouter "
+                        "caps new accounts at 20); 0 = no limit")
     p.add_argument("--fresh", action="store_true", help="re-run even if a finished run already exists")
+    p.add_argument("--max_minutes", type=float,
+                   help="start no new run after this many minutes (runs already going finish); re-run to continue")
     p.add_argument("--dry_run", action="store_true", help="print the plan and the commands, run nothing")
     p.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
     args = p.parse_args()
@@ -153,8 +165,8 @@ def main() -> None:
     console_dir.mkdir(parents=True, exist_ok=True)
 
     plan, skipped = [], []
-    for condition in conditions:
-        for seed in seeds:
+    for seed in seeds:  # every condition gets seed 0 before any gets seed 1, so a stopped stage stays balanced
+        for condition in conditions:
             if not args.fresh and already_done(log_dir, condition, seed):
                 skipped.append(f"{condition}-seed{seed}")
             else:
@@ -162,6 +174,9 @@ def main() -> None:
 
     total_calls = sum(model_calls(c, args) for c, _ in plan)
     print(f"Plan: {len(plan)} run(s), about {total_calls:,} model calls, up to {args.parallel} at a time.")
+    if args.rpm > 0:
+        print(f"Rate limit: at most {args.rpm:g} requests per minute per model, so at least "
+              f"~{total_calls / args.rpm:.0f} min (more with retries).")
     for condition in conditions:
         family, what, _ = CONDITIONS[condition]
         print(f"  {condition:<13} [{family}] {what}")
@@ -177,25 +192,40 @@ def main() -> None:
     if not args.yes and sys.stdin.isatty() and input("Continue? [y/N] ").strip().lower() not in ("y", "yes"):
         sys.exit("aborted")
 
+    env = dict(os.environ)
+    if args.rpm > 0:  # read by src/resources/model_wrappers.py; one shared limit for every run on this machine
+        env["LLM_MAX_RPM"] = f"{args.rpm:g}"
+        env.setdefault("LLM_RATE_DIR", os.path.join(tempfile.gettempdir(), "llm_rate_limit"))
+    else:
+        env.pop("LLM_MAX_RPM", None)
+
     start = time.time()
-    failures = []
+    deadline = start + 60 * args.max_minutes if args.max_minutes else None
+    failures, not_started = [], []
     with ThreadPoolExecutor(max_workers=max(1, args.parallel)) as pool:
         futures = {}
         for condition, seed in plan:
             name = f"{condition}-seed{seed}"
-            futures[pool.submit(run_one, build_command(condition, seed, args, log_dir_name), console_dir / f"{name}.log")] = name
+            cmd = build_command(condition, seed, args, log_dir_name)
+            futures[pool.submit(run_one, cmd, console_dir / f"{name}.log", env, deadline)] = name
         for done, future in enumerate(as_completed(futures), start=1):
             name = futures[future]
             code = future.result()
+            if code is None:
+                not_started.append(name)
+                continue
             status = "done" if code == 0 else f"FAILED (exit {code})"
-            print(f"\n[{done}/{len(plan)}] {name}: {status}  ({(time.time() - start) / 60:.1f} min elapsed)")
-            print(summary_lines(console_dir / f"{name}.log"))
+            print(f"\n[{done}/{len(plan)}] {name}: {status}  ({(time.time() - start) / 60:.1f} min elapsed)", flush=True)
+            print(summary_lines(console_dir / f"{name}.log"), flush=True)
             if code != 0:
                 failures.append(name)
 
-    print(f"\nFinished {len(plan) - len(failures)}/{len(plan)} run(s) in {(time.time() - start) / 60:.1f} min.")
+    finished = len(plan) - len(failures) - len(not_started)
+    print(f"\nFinished {finished}/{len(plan)} run(s) in {(time.time() - start) / 60:.1f} min.")
     if failures:
         print(f"Failed: {', '.join(failures)}. Full output: {console_dir}/<name>.log. Re-run the same command to retry them.")
+    if not_started:
+        print(f"Time budget reached; {len(not_started)} run(s) not started. Re-run the same command to continue.")
     print(f"Next: uv run python sprint/analyze.py{' --paper' if args.paper else ''}")
 
 

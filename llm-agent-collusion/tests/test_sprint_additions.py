@@ -9,6 +9,8 @@ canned JSON, so these run in a second and cost nothing.
 import json
 import random
 import re
+import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -175,6 +177,45 @@ def test_opening_asks_follow_the_center(fake_models, tmp_path):
     queue = hour1[0].split("## Current Status of Ask Queue", 1)[1].split("##", 1)[0]
     opening = [float(x) for x in re.findall(r"\((\d+\.\d+),", queue)]
     assert opening and all(88.75 <= x <= 91.25 for x in opening)
+
+
+def test_rate_limiter_spaces_requests(tmp_path):
+    from src.resources.model_wrappers import RequestsPerMinute
+
+    limiter = RequestsPerMinute(rpm=2, state_dir=str(tmp_path), window=0.6)
+    start = time.time()
+    for _ in range(3):
+        limiter.wait_for_slot("openai/gpt-4.1")
+    assert time.time() - start >= 0.55  # the third request had to wait for the window to slide
+    limiter.wait_for_slot("openai/gpt-4.1-mini")  # other models have their own budget
+    assert time.time() - start < 1.2
+
+
+def test_openrouter_client_waits_out_a_429(monkeypatch):
+    import openai
+    from src.resources import model_wrappers as mw
+
+    reset_ms = str(int((time.time() + 7) * 1000))
+    calls, sleeps = [], []
+
+    def create(**kwargs):
+        calls.append(kwargs["model"])
+        if len(calls) == 1:  # the shape OpenRouter sends for its new-account limit
+            error = openai.RateLimitError.__new__(openai.RateLimitError)  # no HTTP response needed
+            error.response = None
+            error.body = {"code": 429, "metadata": {"headers": {"X-RateLimit-Reset": reset_ms}}}
+            raise error
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"ask": 95}'))])
+
+    fake = SimpleNamespace(base_url="https://openrouter.ai/api/v1",
+                           chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr(mw, "make_client", lambda **kwargs: fake)
+    monkeypatch.setattr(mw.time, "sleep", sleeps.append)
+    monkeypatch.delenv("LLM_MAX_RPM", raising=False)
+    client = mw.OpenRouterClient("gpt-4.1", max_retries=1)  # one attempt: the 429 must not use it up
+    assert client.generate([{"role": "user", "content": "hi"}]) == '{"ask": 95}'
+    assert calls == ["openai/gpt-4.1", "openai/gpt-4.1"]
+    assert len(sleeps) == 1 and 6 <= sleeps[0] <= 11  # waited until the reset time the server sent
 
 
 @pytest.mark.parametrize(
