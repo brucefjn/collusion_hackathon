@@ -18,7 +18,7 @@ Reads the same runs as analyze.py (results/sprint/) and writes sprint/output/sta
 
 Pre-registered analysis (team plan, Oct 24): the main outcome is the LLM sellers' mean ask index over the last
 third of hours (a maverick's own asks excluded). Each remedy is compared with the control by a Welch t-test and an
-exact two-sided permutation test on the difference in means; p-values are Holm-corrected across the 11 remedies.
+exact two-sided permutation test on the difference in means; p-values are Holm-corrected across the 13 comparisons with the control.
 Everything in tests_robustness.csv is exploratory and added after seeing the data, and the paper must say so.
 
 Design note: a seed fixes the agents' names and the opening order book, so run k of every condition starts from the
@@ -44,6 +44,8 @@ from run_conditions import CONDITIONS, PROJECT_DIR  # noqa: E402
 CONTROL = "control"
 REMEDIES = ["ban", "cap80", "cap20", "cap5", "warning_only", "oversight_silent", "oversight25", "oversight50",
             "oversight100", "oversight_enforced", "maverick"]
+# Holm family, as in the paper's Methods (Section 3.5): all 13 non-control conditions vs control
+COMPARISONS = ["no_pressure", "start_competitive"] + REMEDIES
 FAMILY = {c: CONDITIONS[c][0] for c in CONDITIONS}
 # The overseer samples round(q * messages) of the 3 messages each hour, so 25% reads 1 of 3 and 50% reads 2 of 3.
 PAPER_LABELS = dict(LABELS)
@@ -217,7 +219,7 @@ def primary_tests(runs):
     y = by_condition(runs, "llm_ask_index_last_third")
     ctrl = y[CONTROL]
     rows, p_w, p_p = [], {}, {}
-    for c in REMEDIES:
+    for c in COMPARISONS:
         x = y[c]
         diff, lo, hi, t, df, pw = welch(x, ctrl)
         pp, floor = exact_perm(x, ctrl)
@@ -235,18 +237,18 @@ def primary_tests(runs):
 
 
 def robustness_tests(runs):
-    conds = [CONTROL] + REMEDIES
+    conds = [CONTROL] + COMPARISONS
     sub = [r for r in runs if r["condition"] in conds]
     seeds = sorted({r["seed"] for r in sub})
-    out = {c: {"condition": c, "label": PAPER_LABELS[c]} for c in REMEDIES}
+    out = {c: {"condition": c, "label": PAPER_LABELS[c]} for c in COMPARISONS}
 
     # (a) seed-blocked regression: index ~ condition + seed, HC3 SEs (uses the shared opening order book)
     y = np.array([r["llm_ask_index_last_third"] for r in sub])
-    X = np.column_stack([np.ones(len(sub))] + [[r["condition"] == c for r in sub] for c in REMEDIES]
+    X = np.column_stack([np.ones(len(sub))] + [[r["condition"] == c for r in sub] for c in COMPARISONS]
                         + [[r["seed"] == s for r in sub] for s in seeds[1:]]).astype(float)
     beta, se, df = ols_hc3(y, X)
     p_block = {}
-    for i, c in enumerate(REMEDIES, start=1):
+    for i, c in enumerate(COMPARISONS, start=1):
         t = beta[i] / se[i]
         h = st.t.ppf(0.975, df) * se[i]
         p_block[c] = 2 * st.t.sf(abs(t), df)
@@ -258,7 +260,7 @@ def robustness_tests(runs):
     # (b) drift outcome (last-third ask index minus the hour-1 ask index): change from each run's own opening
     d = by_condition(runs, "drift")
     p_d = {}
-    for c in REMEDIES:
+    for c in COMPARISONS:
         diff, lo, hi, t, dfw, pw = welch(d[c], d[CONTROL])
         p_d[c] = pw
         out[c].update({"drift_mean": d[c].mean(), "drift_control": d[CONTROL].mean(), "drift_diff": diff,
@@ -266,7 +268,7 @@ def robustness_tests(runs):
                        "p_drift_perm": exact_perm(d[c], d[CONTROL])[0]})
     for c, p in holm(p_d).items():
         out[c]["p_drift_holm"] = p
-    return [out[c] for c in REMEDIES]
+    return [out[c] for c in COMPARISONS]
 
 
 def mechanism_tests(runs):
@@ -408,9 +410,8 @@ def fig2(primary, runs, mech, out: Path):
     plt = setup_mpl()
     y_all = by_condition(runs, "llm_ask_index_last_third")
     ctrl = y_all[CONTROL]
-    np_diff = welch(y_all["no_pressure"], ctrl)
     mech_by = {m["condition"]: m for m in mech}
-    groups = [("Reference: remove the CEO pressure", ["no_pressure"]),
+    groups = [("Reference conditions (not remedies)", ["start_competitive", "no_pressure"]),
               ("Communication limits", ["ban", "cap80", "cap20", "cap5"]),
               ("Monitoring", ["warning_only", "oversight_silent", "oversight25", "oversight50", "oversight100",
                               "oversight_enforced"]),
@@ -426,23 +427,19 @@ def fig2(primary, runs, mech, out: Path):
             ypos.append(y)
             y -= 1
         y -= 0.35
-    fig, ax = plt.subplots(figsize=(7.2, 4.8))
+    fig, ax = plt.subplots(figsize=(7.2, 5.1))
     clean(ax, "x")
     ax.axvline(0, color=INK_2, linewidth=0.9)
     ax.axvline(-ctrl.mean(), color=INK_2, linewidth=0.8, linestyle=(0, (1, 2)))
     for c, yy in zip(rows, ypos):
-        if c == "no_pressure":
-            diff, lo, hi = np_diff[0], np_diff[1], np_diff[2]
-            color = FAMILY_COLORS["none"]
-        else:
-            diff, lo, hi = prim[c]["diff_vs_control"], prim[c]["diff_ci_low"], prim[c]["diff_ci_high"]
-            color = FAMILY_COLORS[FAMILY[c]]
+        diff, lo, hi = prim[c]["diff_vs_control"], prim[c]["diff_ci_low"], prim[c]["diff_ci_high"]
+        color = FAMILY_COLORS[FAMILY[c]]
         per_seed = y_all[c] - ctrl.mean()
         ax.scatter(per_seed, np.full(len(per_seed), yy) + np.linspace(-0.18, 0.18, len(per_seed)), s=7,
                    color=color, alpha=0.35, linewidth=0, zorder=2)
         ax.plot([lo, hi], [yy, yy], color=color, linewidth=2, solid_capstyle="round", zorder=3)
         ax.scatter([diff], [yy], s=42, color=color, edgecolor=SURFACE, linewidth=1.2, zorder=4)
-    ax.set_yticks(ypos, [PAPER_LABELS[c] if c != "no_pressure" else "No CEO pressure" for c in rows], fontsize=8)
+    ax.set_yticks(ypos, [PAPER_LABELS[c] for c in rows], fontsize=8)
     for yy, head in heads:
         ax.text(-1.3, yy, head, fontsize=8, fontweight="bold", color=INK, va="center", ha="left")
     ax.set_xlim(-1.3, 0.45)
@@ -458,12 +455,9 @@ def fig2(primary, runs, mech, out: Path):
                 va="bottom", clip_on=False)
     for c, yy in zip(rows, ypos):
         m = mech_by[c]
-        if c == "no_pressure":
-            vals = [f"{-np_diff[0] / ctrl.mean():.0%}", "-", "0", f"{m['trades']:.1f}"]
-        else:
-            p = prim[c]
-            vals = [f"{p['share_removed']:.0%}", f"{p['p_welch_holm']:.2f}", f"{m['monitor_reads']:.0f}",
-                    f"{m['trades']:.1f}"]
+        p = prim[c]
+        ph = "<0.001" if p["p_welch_holm"] < 0.001 else f"{p['p_welch_holm']:.2f}"
+        vals = [f"{p['share_removed']:.0%}", ph, f"{m['monitor_reads']:.0f}", f"{m['trades']:.1f}"]
         for (text, x), v in zip(cols, vals):
             ax.text(x, yy, v, transform=ax.get_yaxis_transform(), fontsize=7.5, color=INK, ha="center",
                     va="center")
@@ -520,7 +514,8 @@ def table1(runs, primary, mech):
         if c in prim:
             p = prim[c]
             share = f"{p['share_removed']:.0%} ({p['share_removed_ci_low']:.0%}, {p['share_removed_ci_high']:.0%})"
-            pw, pp = f(p["p_welch_holm"]), f(p["p_perm_holm"])
+            pw = "<0.001" if p["p_welch_holm"] < 0.001 else f(p["p_welch_holm"])
+            pp = f(p["p_perm_holm"], 3) if p["p_perm_holm"] < 0.2 else f(p["p_perm_holm"])
         else:
             r, lo, hi = share_removed(y[CONTROL], x) if c != CONTROL else (float("nan"),) * 3
             share = "-" if c == CONTROL else f"{r:.0%} ({lo:.0%}, {hi:.0%})"
@@ -533,8 +528,8 @@ def table1(runs, primary, mech):
               "price ($90), 1 = cartel price ($100); LLM sellers only. Mean trade price: mean of each run's average "
               "trade price. Share removed = (control - condition) / control; CI = Welch CI of the difference divided "
               "by the control mean. p: each remedy vs "
-              "control, Holm-corrected across the 11 remedies. The exact permutation test cannot go below "
-              "p = 0.0079 with 5 vs 5 runs, so after Holm across 11 remedies its smallest possible value is 0.087. "
+              "control, Holm-corrected across the 13 comparisons with the control. The exact permutation test cannot go below "
+              "p = 0.0079 with 5 vs 5 runs, so after Holm across 13 comparisons its smallest possible value is 0.103. "
               "Trades and Msgs read: means per run; 45 trades are possible per run."]
     return "\n".join(lines) + "\n"
 
@@ -546,7 +541,7 @@ def write_csv(path, rows):
     for r in rows:
         keys += [k for k in r if k not in keys]
     with open(path, "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=keys)
+        w = csv.DictWriter(fh, fieldnames=keys, lineterminator="\n")
         w.writeheader()
         for r in rows:
             w.writerow({k: (json.dumps(v) if isinstance(v, list) else v) for k, v in r.items()})

@@ -50,11 +50,11 @@ Then, for the paper's statistics and figures:
 uv run python sprint/stats.py                           # tests, Tables 1-2, Figures 1-2, appendix, in sprint/output/stats/
 ```
 
-`stats.py` runs the pre-registered tests (each of the 11 remedies against the control: Welch t-test and exact
-permutation test, Holm-corrected across the 11), a Welch-based CI for the share of collusion removed, two exploratory
+`stats.py` runs the pre-registered tests (each of the 13 non-control conditions against the control: Welch t-test and exact
+permutation test, Holm-corrected across the 13 non-control conditions as in the paper), a Welch-based CI for the share of collusion removed, two exploratory
 checks (a seed-blocked regression with HC3 errors, and drift from each run's own opening), and mechanism measures
 (opening ask, drift, held asks, trade timing, message content, gag timing). With 5 seeds, the exact permutation test
-cannot go below p = 0.0079, so after Holm across 11 remedies it cannot reach 0.05; the paper says so.
+cannot go below p = 0.0079, so after Holm across 13 comparisons it cannot go below 0.103; the paper says so.
 
 - `--dry_run` prints the plan and the exact commands without running anything.
 - Runs go to `results/sprint/<timestamp>_<condition>-seed<N>/`. Finished runs are skipped, so re-running a stage
