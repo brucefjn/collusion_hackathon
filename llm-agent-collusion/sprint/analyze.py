@@ -300,6 +300,58 @@ def plot(rows, out: Path, ce: float, jpm: float):
     fig.savefig(out / "fig_cost_effectiveness.png", facecolor="white")
     plt.close(fig)
 
+    # Figure 3: every condition ranked by the share of the control's collusion it removes, with its costs
+    # written beside it (one axis; costs as text, so there is no second scale)
+    ranked = sorted((r for r in shown if r["condition"] not in ("control", "no_pressure")
+                     and not math.isnan(r["share_removed"])), key=lambda r: r["share_removed"])
+    if not ranked:
+        return
+    fig, ax = plt.subplots(figsize=(8.2, 0.4 * len(ranked) + 1.9), dpi=200)
+    style_axes(ax)
+    ys = list(range(len(ranked)))
+    ax.axvline(0, color=INK_2, linewidth=1)
+    ax.axvline(1, color=INK_2, linewidth=1, linestyle=(0, (4, 3)))
+    for y, r in zip(ys, ranked):
+        color = FAMILY_COLORS.get(r["family"], INK_2)
+        ci = r["share_removed_ci95"]
+        if not math.isnan(ci):
+            ax.plot([r["share_removed"] - ci, r["share_removed"] + ci], [y, y], color=color, linewidth=2,
+                    solid_capstyle="round")
+        ax.plot(r["share_removed"], y, "o", markersize=8, color=color, markeredgecolor="white", markeredgewidth=2)
+    ax.set_yticks(ys, [LABELS.get(r["condition"], r["condition"]) for r in ranked])
+    ax.grid(False, axis="y")
+    lo = min(-0.6, min(r["share_removed"] - (0 if math.isnan(r["share_removed_ci95"]) else r["share_removed_ci95"])
+                       for r in ranked) - 0.05)
+    hi = max(1.6, max(r["share_removed"] + (0 if math.isnan(r["share_removed_ci95"]) else r["share_removed_ci95"])
+                      for r in ranked) + 0.05)
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(-0.7, len(ranked) - 0.3)
+    ax.text(0, len(ranked) - 0.35, " none removed", color=INK_2, fontsize=7.5, va="bottom")
+    ax.text(1, len(ranked) - 0.35, " all removed", color=INK_2, fontsize=7.5, va="bottom")
+    ax.annotate("Monitor reads\nper run", xy=(1.0, len(ranked) - 0.35), xycoords=("axes fraction", "data"),
+                xytext=(10, 0), textcoords="offset points", va="bottom", ha="left", fontsize=7.5, color=INK_2)
+    ax.annotate("Buyer surplus\nvs control", xy=(1.0, len(ranked) - 0.35), xycoords=("axes fraction", "data"),
+                xytext=(78, 0), textcoords="offset points", va="bottom", ha="left", fontsize=7.5, color=INK_2)
+    for y, r in zip(ys, ranked):
+        ax.annotate(f"{r['monitor_reads']:.0f}", xy=(1.0, y), xycoords=("axes fraction", "data"), xytext=(10, 0),
+                    textcoords="offset points", va="center", ha="left", fontsize=8, color=INK)
+        ax.annotate(("+" if r["buyer_surplus_change"] >= 0 else "-") + f"${abs(r['buyer_surplus_change']):.0f}", xy=(1.0, y), xycoords=("axes fraction", "data"),
+                    xytext=(78, 0), textcoords="offset points", va="center", ha="left", fontsize=8, color=INK)
+    ax.set_xlabel("Share of the control's collusion removed (LLM sellers' last-third ask index)")
+    fam_label = {"none": "Reference (not a remedy)"}
+    fig_handles = [Line2D([], [], marker="o", linestyle="", color=c, markersize=7,
+                          label=fam_label.get(f, f.capitalize()))
+                   for f, c in FAMILY_COLORS.items() if any(r["family"] == f for r in ranked)]
+    fig.suptitle("How much of the control's collusion each condition removes", x=0.01, y=0.985, ha="left",
+                 color=INK, fontsize=11)
+    fig.legend(handles=fig_handles, frameon=False, fontsize=8, ncol=len(fig_handles), loc="upper left",
+               bbox_to_anchor=(0.005, 0.95))
+    fig.text(0.01, 0.015, "Points: mean across seeds. Bars: 95% CI of each condition's ask index, scaled by the "
+             "control's index.", color=INK_2, fontsize=7.5, va="bottom")
+    fig.tight_layout(rect=(0, 0.04, 0.82, 0.9))
+    fig.savefig(out / "fig_remedy_ranking.png", facecolor="white")
+    plt.close(fig)
+
 
 def place_labels(ax, items):
     """Label points to their right, nudging labels upward so nearby ones do not overlap; a thin leader
@@ -315,7 +367,8 @@ def place_labels(ax, items):
         while moved:
             moved = False
             for px, py in placed:
-                if abs(px - x) < 0.3 * xr and abs(py - ly) < gap:
+                # the small slack stops a float rounding loop: (py + gap) - py can come out a hair under gap
+                if abs(px - x) < 0.3 * xr and abs(py - ly) < gap * (1 - 1e-6):
                     ly = py + gap
                     moved = True
         placed.append((x, ly))
@@ -353,7 +406,7 @@ def main():
     print((out / "summary.md").read_text())
     if unfinished:
         print(f"Skipped {len(unfinished)} unfinished run(s): {', '.join(unfinished)}")
-    print(f"Wrote {out}/: runs.csv, summary.csv, summary.md, fig_price_by_condition.png, fig_cost_effectiveness.png")
+    print(f"Wrote {out}/: runs.csv, summary.csv, summary.md, fig_price_by_condition.png, fig_cost_effectiveness.png, fig_remedy_ranking.png")
 
 
 if __name__ == "__main__":
