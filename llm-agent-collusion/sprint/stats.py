@@ -9,12 +9,11 @@ Reads the same runs as analyze.py (results/sprint/) and writes sprint/output/sta
   mechanism.csv         per-condition mechanism measures (opening ask, drift, held asks, trade timing, messages, gag)
   runs_extended.csv     one row per run with every measure above
   table1.md             Table 1 for the paper
-  hypotheses.md         how each pre-registered hypothesis turned out
   fig1_anchoring.png/.pdf   Figure 1: sellers hold their opening asks
   fig2_remedies.png/.pdf    Figure 2: each remedy's effect with 95% CI and its costs
   figA1_per_seed.png/.pdf   Appendix: every run, paired by seed
 
-    uv run python sprint/stats.py
+    uv run --extra analysis python sprint/stats.py
 
 Pre-registered analysis (team plan, Oct 24): the main outcome is the LLM sellers' mean ask index over the last
 third of hours (a maverick's own asks excluded). Each remedy is compared with the control by a Welch t-test and an

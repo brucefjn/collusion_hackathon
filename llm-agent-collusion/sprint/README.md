@@ -39,22 +39,10 @@ From `llm-agent-collusion/`, with `OPENROUTER_API_KEY` in the repo-root `compute
 
 ```bash
 uv run python sprint/run_conditions.py --stage pilot    # control, ban, no pressure; seed 0 (about 225 calls)
-uv run python sprint/run_conditions.py --stage core     # 6 conditions x 5 seeds
-uv run python sprint/run_conditions.py --stage extra    # 5 stretch conditions x 5 seeds
-uv run python sprint/analyze.py                         # table + 2 charts in sprint/output/
+uv run python sprint/run_conditions.py --stage core     # 7 conditions x 5 seeds
+uv run python sprint/run_conditions.py --stage extra    # 7 stretch conditions x 5 seeds
+uv run python sprint/analyze.py                         # tables + 3 charts in sprint/output/
 ```
-
-Then, for the paper's statistics and figures:
-
-```bash
-uv run python sprint/stats.py                           # tests, Tables 1-2, Figures 1-2, appendix, in sprint/output/stats/
-```
-
-`stats.py` runs the pre-registered tests (each of the 13 non-control conditions against the control: Welch t-test and exact
-permutation test, Holm-corrected across the 13 non-control conditions as in the paper), a Welch-based CI for the share of collusion removed, two exploratory
-checks (a seed-blocked regression with HC3 errors, and drift from each run's own opening), and mechanism measures
-(opening ask, drift, held asks, trade timing, message content, gag timing). With 5 seeds, the exact permutation test
-cannot go below p = 0.0079, so after Holm across 13 comparisons it cannot go below 0.103; the paper says so.
 
 - `--dry_run` prints the plan and the exact commands without running anything.
 - Runs go to `results/sprint/<timestamp>_<condition>-seed<N>/`. Finished runs are skipped, so re-running a stage
@@ -62,6 +50,18 @@ cannot go below p = 0.0079, so after Holm across 13 comparisons it cannot go bel
 - `--parallel N` sets how many runs go at once (default 3). `--paper` runs the paper's market (5 sellers, 6 buyers,
   30 rounds) into `results/sprint_paper/`.
 - Each run's console output is saved in `results/sprint/_console/`.
+
+Then, for the paper's statistics and figures (needs scipy, from the `analysis` extra):
+
+```bash
+uv run --extra analysis python sprint/stats.py          # tests, Table 1, Figures 1-2, appendix, in sprint/output/stats/
+```
+
+`stats.py` runs the pre-registered tests (each of the 13 non-control conditions against the control: Welch t-test and exact
+permutation test, Holm-corrected across the 13 non-control conditions as in the paper), a Welch-based CI for the share of collusion removed, two exploratory
+checks (a seed-blocked regression with HC3 errors, and drift from each run's own opening), and mechanism measures
+(opening ask, drift, held asks, trade timing, message content, gag timing). With 5 seeds, the exact permutation test
+cannot go below p = 0.0079, so after Holm across 13 comparisons it cannot go below 0.103; the paper says so.
 
 **Do not use `--buyer_models zip` for this project.** The starter's rule-based buyer always bids about $80, which is
 the sellers' cost, so trades almost stop and prices can no longer show collusion.
@@ -80,8 +80,9 @@ the sellers' cost, so trades almost stop and prices can no longer show collusion
   5 characters. In the starter code the gag is only a request in the prompt.
 - `--initial_ask_center`: where the sellers' opening asks are centered (starter default $97.50).
 - `market/market.py` now also passes sellers the asks every seller posted in the previous hour; the LLM sellers ignore it.
-
-The silent monitor, enforced gag and starting-price control follow a suggestion from Sophie's research plan.
 - The cost banner counts only LLM sellers.
 
-Offline tests for these changes (no API key, no cost): `uv run --extra dev pytest tests/test_sprint_additions.py -q`
+The silent monitor, enforced gag and starting-price control follow a suggestion from Sophie's research plan.
+
+Offline tests for these changes (no API key, no cost): `uv run --extra dev pytest tests/test_sprint_additions.py -q`.
+With the stats helpers too: `uv run --extra dev --extra analysis pytest -q`.
