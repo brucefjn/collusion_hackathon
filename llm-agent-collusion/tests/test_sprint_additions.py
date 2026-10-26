@@ -214,7 +214,7 @@ def test_openrouter_client_waits_out_a_429(monkeypatch):
     monkeypatch.delenv("LLM_MAX_RPM", raising=False)
     client = mw.OpenRouterClient("gpt-4.1", max_retries=1)  # one attempt: the 429 must not use it up
     assert client.generate([{"role": "user", "content": "hi"}]) == '{"ask": 95}'
-    assert calls == ["openai/gpt-4.1", "openai/gpt-4.1"]
+    assert calls == [client.model_name] * 2  # retried once (the id is openai/gpt-4.1 when compute.env has a key)
     assert len(sleeps) == 1 and 6 <= sleeps[0] <= 11  # waited until the reset time the server sent
 
 
